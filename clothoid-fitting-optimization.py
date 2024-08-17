@@ -7,7 +7,10 @@ from scipy.interpolate import interp1d
 import time
 from gurobipy import *
 
-def pre_solve( path, kappa, arclength ):
+from numpy import genfromtxt
+
+
+def pre_solve( path, kappa, arclength, kappa_max ):
 
 # PRE_SOLVE Generates good initialization for curvature optimization
 #
@@ -36,8 +39,8 @@ def pre_solve( path, kappa, arclength ):
 
     # Convergence constants
     kMaxDeltaKappa = 0.02  # Maximum curvature variation per iteration [1/m]
-    kTolNormInf = 0.001     # Error tolerance for stop criteria [m]
-    kMaxIter = 50          # Maximum number of iterations
+    kTolNormInf = 0.00001     # Error tolerance for stop criteria [m] DEFAULT 0.0001
+    kMaxIter = 50000000          # Maximum number of iterations
 
     # Get data size
     data_size = len(path) - 1
@@ -99,6 +102,8 @@ def pre_solve( path, kappa, arclength ):
 
         # Minimize norm 1 path recovery error error
         obj =  norm_slack.sum('*')
+        # obj = kappa_v.sum('*')
+        
         # obj = 0
         # for p in range(data_size+1):
         #     obj = obj + norm_slack[p]
@@ -116,6 +121,8 @@ def pre_solve( path, kappa, arclength ):
         #     we can constraint diff(theta_k) = maginitude .* (kappa_v - kappa_lin) for 2:end
         #     and separatedely constraint theta_k(1).
         #     This ensures higher sparsity of the KKT matrix and improve execution times for LP solver
+        
+        m.addConstrs( ( kappa_v[p] <= kappa_max ) for p in range(data_size) ) #added constraint
         m.addConstrs( ( -norm_slack[p] <= path_k[p,0] - path[p,0] ) for p in range(data_size+1) )
         m.addConstrs( ( -norm_slack[p] <= path_k[p,1] - path[p,1] ) for p in range(data_size+1) )
         m.addConstrs( ( path_k[p,0] - path[p,0] <= norm_slack[p] ) for p in range(data_size+1) )
@@ -154,7 +161,7 @@ def pre_solve( path, kappa, arclength ):
     print('    Completed - Exceeded number of iterations.')
     return rot_matrix, kappa, magnitude
 
-def optimize_curvature( path, max_deviation ):
+def optimize_curvature( path, max_deviation, kappa_max ):
 
 # OPTIMIZE_CURVATURE Generates a locally optimal trajectory with bounded deviation from points
 #
@@ -178,8 +185,8 @@ def optimize_curvature( path, max_deviation ):
 
     # Set constants for optimization
     kMaxDeltaKappa = 0.02;  # Maximum curvature variation per iteration [1/m]
-    kTolNormInf = 5e-4;     # Error tolerance for stop criteria [1/m]
-    kMaxIter = 50;          # Maximum number of iterations
+    kTolNormInf = 5e-10;     # Error tolerance for stop criteria [1/m] Default 5e-4
+    kMaxIter = 50000000;          # Maximum number of iterations
 
     # Get data size
     # Note that size is one smaller than data (you only need n arcs to connect n+1 points)
@@ -197,7 +204,7 @@ def optimize_curvature( path, max_deviation ):
     kappa = kappa[0:len(kappa)-1]
 
     # Pre-solve for improved accuracy
-    rot_matrix, kappa, magnitude = pre_solve( path, kappa, arclength )
+    rot_matrix, kappa, magnitude = pre_solve( path, kappa, arclength, kappa_max )
     # print(kappa)
     print('Sparsity solver')
     timer = time.time()
@@ -262,11 +269,17 @@ def optimize_curvature( path, max_deviation ):
 
         # Set optimizer object properties
         # Note: We do not care about the first point since it is fixed
+        # obj = 0
+        # for p in range(data_size - 2):
+        #     obj = obj + norm_slack[p]*weight[p]
         obj = 0
         for p in range(data_size - 2):
-            obj = obj + norm_slack[p]*weight[p]
+            obj = obj + kappa_v[p]*1000  
+            
         m.setObjective(obj, GRB.MINIMIZE)
 
+
+        m.addConstrs( ( kappa_v[p] <= kappa_max ) for p in range(data_size) ) #added constraint
         m.addConstrs( ( -norm_slack[p] <= D_kappa_v[p] ) for p in range(data_size-2) )
         m.addConstrs( ( D_kappa_v[p] <= norm_slack[p] ) for p in range(data_size-2) )
         m.addConstrs( ( -max_deviation <= x_error[p] ) for p in range(data_size+1) )
@@ -445,10 +458,10 @@ def norm_ang( theta ):
         theta_n = theta
     return theta_n
 
-def generate_trajectory( pos ):
+def generate_trajectory( pos, kappa_max ):
     # Calculate the traveled distance and the curvature
-    max_deviation = 1.5
-    pos, theta, arclength, kappa_out, dkappa_out = optimize_curvature( path, max_deviation )
+    max_deviation = 0.0
+    pos, theta, arclength, kappa_out, dkappa_out = optimize_curvature( path, max_deviation, kappa_max )
     fx = interp1d(arclength, pos[:,0], kind='cubic')
     fy = interp1d(arclength, pos[:,1], kind='cubic')
 
@@ -488,17 +501,19 @@ def generate_trajectory( pos ):
 
     return waypoints
 
-with open('skoods_cup_track_limits.npy', 'rb') as f:
-    internal_waypoints_x = np.load(f)
-    internal_waypoints_y = np.load(f)
-    external_waypoints_x = np.load(f)
-    external_waypoints_y = np.load(f)
+# with open('skoods_cup_track_limits.npy', 'rb') as f:
+#     internal_waypoints_x = np.load(f)
+#     internal_waypoints_y = np.load(f)
+#     external_waypoints_x = np.load(f)
+#     external_waypoints_y = np.load(f)
 
-plt.plot(internal_waypoints_x, internal_waypoints_y)
-plt.plot(external_waypoints_x, external_waypoints_y, 'r')
+# plt.plot(internal_waypoints_x, internal_waypoints_y)
+# plt.plot(external_waypoints_x, external_waypoints_y, 'r')
 plt.axis('equal')
 # xy_coordinates = np.load('xy_coordinates.npy')
-xy_coordinates = np.load('xy_coordinates_clot.npy')
+# xy_coordinates = np.load('xy_coordinates_clot.npy')
+xy_coordinates = genfromtxt('waypoints.csv', delimiter=',')
+
 plt.plot(xy_coordinates[:,0], xy_coordinates[:,1],'k+')
 # n = 40
 # plt.plot(xy_coordinates[n,0], xy_coordinates[n,1],'go')
@@ -514,7 +529,7 @@ arclength, kappa = initial_guess( xy_coordinates )
 fx = interp1d(arclength, xy_coordinates[:,0], kind='cubic')
 fy = interp1d(arclength, xy_coordinates[:,1], kind='cubic')
 
-new_arclength = np.arange(0, arclength[-1], 2.0)
+new_arclength = np.arange(0, arclength[-1], 1.0)
 new_x = fx(new_arclength)
 new_y = fy(new_arclength)
 
@@ -539,7 +554,8 @@ arclength, kappa = initial_guess( path )
 plt.plot(arclength, kappa, 'r')
 # plt.show()
 
-waypoints = generate_trajectory( path )
+kappa_max = 1.0
+waypoints = generate_trajectory( path, kappa_max )
 file = 'waypoints.npy'
 np.save(file, waypoints)
 
@@ -547,5 +563,16 @@ plt.figure(1)
 plt.plot(waypoints[:,0], waypoints[:,1],'g')
 
 plt.figure(2)
-plt.plot(waypoints[:,4], waypoints[:,2] ,'g.')
+plt.plot(waypoints[:,4], waypoints[:,2] ,'g')
 plt.show()
+
+######CANNOT BE USED AFTER SPARSE COORDS
+np.savetxt('test_clothoid_result.csv', waypoints, delimiter=',', fmt='%s')
+######
+
+
+####sparse coords
+xy_coordinates = np.vstack((new_x, new_y)).T
+
+# Save the array to a CSV file
+np.savetxt('new_xy_coordinates.csv', xy_coordinates, delimiter=',', fmt='%s', header='x,y', comments='')
